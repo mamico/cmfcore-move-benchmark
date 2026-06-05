@@ -72,12 +72,12 @@ clone (`./_src/Products.CMFCore`) and re-run a measurement:
 
 ```bash
 git -C ./_src/Products.CMFCore checkout master
-docker exec cmfbench /app/bin/zconsole run etc/zope.conf \
-  /app/scripts-bench/benchmark_move.py bench --scenario rename
+docker exec -e BENCH_CMD=bench -e BENCH_SCENARIO=rename cmfbench \
+  /app/bin/zconsole run etc/zope.conf /app/scripts-bench/benchmark_move.py
 
 git -C ./_src/Products.CMFCore checkout move_optimization
-docker exec cmfbench /app/bin/zconsole run etc/zope.conf \
-  /app/scripts-bench/benchmark_move.py bench --scenario rename
+docker exec -e BENCH_CMD=bench -e BENCH_SCENARIO=rename cmfbench \
+  /app/bin/zconsole run etc/zope.conf /app/scripts-bench/benchmark_move.py
 ```
 
 On `master` the providers don't exist, so the run is inherently baseline

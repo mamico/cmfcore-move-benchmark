@@ -86,16 +86,18 @@ fi
 
 # --- dataset ---------------------------------------------------------------
 log "Ensuring dataset of $N objects (idempotent)"
-docker exec "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py setup "$N"
+docker exec -e BENCH_CMD=setup -e BENCH_N="$N" \
+  "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py
 
 # --- measurements ----------------------------------------------------------
 log "Running measurements"
 RESULTS=()
 for scenario in rename cutpaste; do
   for mode in baseline optimized; do
-    flag=""; [[ "$mode" == "baseline" ]] && flag="--baseline"
-    line="$(docker exec "$CONTAINER" $ZRUN \
-      /app/scripts-bench/benchmark_move.py bench --scenario "$scenario" $flag \
+    bl=""; [[ "$mode" == "baseline" ]] && bl="1"
+    line="$(docker exec \
+      -e BENCH_CMD=bench -e BENCH_SCENARIO="$scenario" -e BENCH_BASELINE="$bl" \
+      "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py \
       2>/dev/null | grep '^RESULT' || true)"
     echo "$line"
     RESULTS+=("$line")

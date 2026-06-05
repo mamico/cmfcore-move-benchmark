@@ -1,24 +1,24 @@
 """Benchmark the Products.CMFCore move optimization.
 
-Run inside the plone/plone-backend container via:
+Run inside the plone/plone-backend container via ``zconsole run``, which injects
+the Zope application root as the global ``app`` but does NOT forward argv — so
+parameters are passed as environment variables:
 
-    zconsole run etc/zope.conf /app/scripts-bench/benchmark_move.py <cmd> [opts]
+    BENCH_CMD=setup BENCH_N=10000 \
+        zconsole run etc/zope.conf benchmark_move.py
+    BENCH_CMD=bench BENCH_SCENARIO=rename|cutpaste [BENCH_BASELINE=1] \
+        zconsole run etc/zope.conf benchmark_move.py
 
-Commands:
-    setup <N>                       build /Plone/bigfolder with N Documents (+ /Plone/dest)
-    bench --scenario rename|cutpaste [--baseline]
-                                    time the move, print a RESULT line, then abort
+  setup    build /Plone/bigfolder with BENCH_N Documents (+ /Plone/dest)
+  bench    time the move, print a RESULT line, then abort
 
 The script is branch-agnostic: it works on both the original (master) and the
-modified (move_optimization) CMFCore.  ``--baseline`` unregisters the
+modified (move_optimization) CMFCore.  ``BENCH_BASELINE=1`` unregisters the
 IContextAwareIndexProvider utilities so that the modified code falls back to the
 original ``unindex`` + ``index`` path (a no-op on master, which is baseline anyway).
-
-``zconsole run`` injects the Zope application root as the global ``app``.
 """
 
-import argparse
-import sys
+import os
 import time
 
 import transaction
@@ -53,9 +53,18 @@ def _get_portal(app):
 # --------------------------------------------------------------------------
 # setup
 # --------------------------------------------------------------------------
+def _ensure_folder_addable(portal):
+    # In Plone 6 the 'Folder' type has global_allow=False; enable it so we can
+    # build a folderish container with many children at the site root.
+    fti = portal.portal_types.getTypeInfo('Folder')
+    if fti is not None and not fti.global_allow:
+        fti.global_allow = True
+
+
 def cmd_setup(app, n):
     _login_admin(app)
     portal = _get_portal(app)
+    _ensure_folder_addable(portal)
 
     if FOLDER_ID not in portal.objectIds():
         portal.invokeFactory('Folder', FOLDER_ID, title='Big Folder')
@@ -200,25 +209,18 @@ def cmd_bench(app, scenario, baseline):
 
 
 # --------------------------------------------------------------------------
-def main(app, argv):
-    parser = argparse.ArgumentParser(prog='benchmark_move.py')
-    sub = parser.add_subparsers(dest='cmd', required=True)
-
-    p_setup = sub.add_parser('setup', help='build the dataset')
-    p_setup.add_argument('n', type=int, help='number of Documents to create')
-
-    p_bench = sub.add_parser('bench', help='time a move and report')
-    p_bench.add_argument('--scenario', choices=('rename', 'cutpaste'),
-                         required=True)
-    p_bench.add_argument('--baseline', action='store_true',
-                         help='disable the optimization (original behavior)')
-
-    args = parser.parse_args(argv)
-    if args.cmd == 'setup':
-        cmd_setup(app, args.n)
-    elif args.cmd == 'bench':
-        cmd_bench(app, args.scenario, args.baseline)
+def main(app):
+    cmd = os.environ.get('BENCH_CMD', '')
+    if cmd == 'setup':
+        cmd_setup(app, int(os.environ.get('BENCH_N', '10000')))
+    elif cmd == 'bench':
+        scenario = os.environ.get('BENCH_SCENARIO', 'rename')
+        baseline = os.environ.get('BENCH_BASELINE', '').lower() in (
+            '1', 'true', 'yes', 'on')
+        cmd_bench(app, scenario, baseline)
+    else:
+        raise SystemExit('Set BENCH_CMD=setup|bench (see module docstring).')
 
 
-# ``app`` is injected by ``zconsole run``; argv after the script path.
-main(app, sys.argv[1:])  # noqa: F821
+# ``app`` is injected by ``zconsole run``.
+main(app)  # noqa: F821
