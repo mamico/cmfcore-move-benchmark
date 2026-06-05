@@ -12,7 +12,7 @@ catalog RID is preserved and only the *context-aware* indexes (`path`, `getId`,
 ## Requirements
 
 - Docker
-- This repo's sibling checkout at `../Products.CMFCore` (override with `CMFCORE=`)
+- Network access to clone the CMFCore repo
 
 ## Run
 
@@ -20,13 +20,16 @@ catalog RID is preserved and only the *context-aware* indexes (`path`, `getId`,
 ./run.sh                 # ensure container + Plone site + 10k-object dataset, then 4 measurements
 N=20000 ./run.sh         # bigger dataset
 REBUILD=1 ./run.sh       # recreate the container from scratch
-IMAGE=plone/plone-backend:6.1.4 ./run.sh
+BRANCH=move_optimization ./run.sh
+IMAGE=plone/plone-backend:6.2 ./run.sh
 ./run.sh down            # remove the container (the dataset in ./_data is kept)
 ```
 
-The first run installs the mounted CMFCore editable (`pip install -e --no-deps`),
-creates a Volto Plone site, and builds `/Plone/bigfolder` with `N` Documents plus
-an empty `/Plone/dest`. Later runs reuse the persisted container/dataset and just
+On first run it **clones** `https://github.com/zopefoundation/Products.CMFCore.git`
+(branch `move_optimization`, override with `REPO=` / `BRANCH=`) into `./_src`,
+installs it editable in the container (`pip install -e --no-deps`), creates a Volto
+Plone site, and builds `/Plone/bigfolder` with `N` Documents plus an empty
+`/Plone/dest`. Later runs reuse the persisted container/dataset and just
 re-measure (fast).
 
 ## What it measures
@@ -63,16 +66,16 @@ variable is the feature itself.
 ## Optional: true git-branch comparison
 
 For literal "original vs modified" fidelity, compare the branches directly. The
-editable install reads the mounted source live and `zconsole` reloads code + ZCML
-on every invocation, so no reinstall is needed — just check out a branch on the
-host and re-run a measurement:
+editable install reads the mounted clone live and `zconsole` reloads code + ZCML
+on every invocation, so no reinstall is needed — just check out a branch in the
+clone (`./_src/Products.CMFCore`) and re-run a measurement:
 
 ```bash
-git -C ../Products.CMFCore checkout master
+git -C ./_src/Products.CMFCore checkout master
 docker exec cmfbench /app/bin/zconsole run etc/zope.conf \
   /app/scripts-bench/benchmark_move.py bench --scenario rename
 
-git -C ../Products.CMFCore checkout move_optimization
+git -C ./_src/Products.CMFCore checkout move_optimization
 docker exec cmfbench /app/bin/zconsole run etc/zope.conf \
   /app/scripts-bench/benchmark_move.py bench --scenario rename
 ```
@@ -90,5 +93,6 @@ column versus `idx_updates` makes it visible and is useful input for tuning
 ## Files
 
 - `benchmark_move.py` — `zconsole` script (`setup` / `bench`), instrumentation, toggle
-- `run.sh` — container orchestration + summary
+- `run.sh` — clone + container orchestration + summary
+- `_src/` — cloned CMFCore checkout (created on first run)
 - `_data/` — persisted Plone `Data.fs` (created on first run)

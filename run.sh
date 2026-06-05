@@ -10,14 +10,30 @@
 #
 set -euo pipefail
 
-IMAGE="${IMAGE:-plone/plone-backend:6.1}"
+IMAGE="${IMAGE:-plone/plone-backend:6.2}"
 CONTAINER="${CONTAINER:-cmfbench}"
 N="${N:-10000}"
+REPO="${REPO:-https://github.com/zopefoundation/Products.CMFCore.git}"
+BRANCH="${BRANCH:-move_optimization}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CMFCORE="${CMFCORE:-$(cd "$HERE/../Products.CMFCore" && pwd)}"
+SRCDIR="$HERE/_src/Products.CMFCore"
 DATADIR="$HERE/_data"
 CONF="etc/zope.conf"
 ZRUN="/app/bin/zconsole run $CONF"
+
+# zope.conf uses $(...) substitutions that the image entrypoint normally exports
+# at runtime; set them at `docker run` so every `docker exec` inherits them.
+ZOPE_ENV=(
+  -e SECURITY_POLICY_IMPLEMENTATION=C
+  -e VERBOSE_SECURITY=off
+  -e DEBUG_MODE=off
+  -e DEFAULT_ZPUBLISHER_ENCODING=utf-8
+  -e ZODB_CACHE_SIZE=50000
+  -e ZOPE_FORM_MEMORY_LIMIT=4MB
+  -e ZOPE_FORM_DISK_LIMIT=1GB
+  -e ZOPE_FORM_MEMFILE_LIMIT=4MB
+  -e CLIENT_HOME=/data/client
+)
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -33,13 +49,27 @@ fi
 
 # --- container -------------------------------------------------------------
 if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  if [[ ! -d "$SRCDIR/.git" ]]; then
+    log "Cloning $REPO ($BRANCH)"
+    rm -rf "$SRCDIR"; mkdir -p "$(dirname "$SRCDIR")"
+    git clone --branch "$BRANCH" "$REPO" "$SRCDIR"
+  else
+    log "Updating clone to $BRANCH"
+    git -C "$SRCDIR" fetch --quiet origin
+    git -C "$SRCDIR" checkout --quiet "$BRANCH"
+    git -C "$SRCDIR" pull --quiet --ff-only || true
+  fi
+
   log "Starting idle container $CONTAINER from $IMAGE"
   mkdir -p "$DATADIR"; chmod 777 "$DATADIR"
   docker run -d --name "$CONTAINER" \
-    -v "$CMFCORE":/app/src/Products.CMFCore \
+    "${ZOPE_ENV[@]}" \
+    -v "$SRCDIR":/app/src/Products.CMFCore \
     -v "$HERE":/app/scripts-bench \
     -v "$DATADIR":/data \
     "$IMAGE" sleep infinity >/dev/null
+
+  docker exec "$CONTAINER" mkdir -p /data/client
 
   log "Installing editable CMFCore (--no-deps)"
   docker exec "$CONTAINER" /app/bin/pip install -e /app/src/Products.CMFCore --no-deps -q
