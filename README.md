@@ -9,6 +9,9 @@ Plone 6 site, running in an isolated `plone/plone-backend` container.
 catalog RID is preserved and only the *context-aware* indexes (`path`, `getId`,
 `id`, `allowedRolesAndUsers`) are reindexed.
 
+📊 **Results:** see [BENCHMARK.md](BENCHMARK.md) — moving a 10k-object folder is
+~1.9× faster with ~8× fewer index writes.
+
 ## Requirements
 
 - Docker
@@ -55,6 +58,15 @@ pristine and repeatable.
 | `move_object` | 0 | ~N |
 
 The summary prints `speedup` and `% saved` per scenario.
+
+> **Note — real sites should benefit even more.** This dataset uses empty
+> `Document` objects, so recomputing the `SearchableText` index is trivial. On a
+> full reindex (the baseline), `SearchableText` extraction is one of the most
+> expensive steps for content holding Word/PDF/Office/HTML payloads: it runs
+> full-text extraction through `portal_transforms` (and external tooling). The
+> optimization never touches `SearchableText` on a move, so the more such content
+> a moved subtree contains, the larger the real-world saving versus the
+> ~1.9× measured here on cheap-to-index objects.
 
 ## Why the toggle is a faithful baseline
 

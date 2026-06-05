@@ -76,6 +76,13 @@ cutpaste  optimized    10000     40.210           10003                 0       
   notably — `CatalogTool.moveObject` calling `getQueue().process()` **once per
   descendant** (10,001 flushes). This repeated flushing is the prime candidate
   for further tuning (hoist the flush out of the per-object path).
+- **Real sites should benefit more than this.** The dataset uses empty
+  `Document` objects, so recomputing `SearchableText` is trivial here. On a full
+  reindex (the baseline), `SearchableText` is typically the most expensive index
+  for content with Word/PDF/Office/HTML payloads — it runs full-text extraction
+  through `portal_transforms` (and external tooling). The optimization never
+  touches `SearchableText` on a move, so the more such content a moved subtree
+  holds, the larger the real-world saving versus the ~1.9× measured here.
 
 ## Results — 100,000 objects
 
