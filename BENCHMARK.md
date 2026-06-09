@@ -84,9 +84,29 @@ cutpaste  optimized    10000     40.210           10003                 0       
   touches `SearchableText` on a move, so the more such content a moved subtree
   holds, the larger the real-world saving versus the ~1.9× measured here.
 
-## Results — 100,000 objects
+## Results — 50,000 objects
 
-_Pending — see "100k run" below._
+```
+scenario  mode         N        seconds  catalog_object  uncatalog_object  idx_updates  move_object
+rename    baseline     50000    931.636           50003             50001      1600065            0
+rename    optimized    50000    484.964           50003                 0       200037        50001
+cutpaste  baseline     50000    978.913           50003             50001      1600096            0
+cutpaste  optimized    50000    504.238           50003                 0       200068        50001
+```
+
+| scenario | baseline | optimized | speedup | time saved |
+|---|--:|--:|--:|--:|
+| rename (`manage_renameObject`) | 931.64 s | 484.96 s | **1.92×** | **47.9 %** |
+| cut + paste | 978.91 s | 504.24 s | **1.94×** | **48.5 %** |
+
+### Interpretation
+
+- **Index updates:** baseline ≈ `1600065 / 50003 ≈ 32` per object; optimized ≈
+  `200037 / 50003 ≈ 4` — exactly the four context-aware indexes. **~8× fewer
+  index writes**, consistent with the 10k result.
+- **Unindex pass removed:** `uncatalog_object=0` for all optimized runs.
+- **All children optimized:** `move_object=50001` confirms every descendant
+  went through `CatalogTool.moveObject` — no silent fallback to full reindex.
 
 ## Reproduce
 
