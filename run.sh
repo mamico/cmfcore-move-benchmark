@@ -6,6 +6,7 @@
 #   ./run.sh            # ensure container + site + dataset, then run 4 measurements
 #   REBUILD=1 ./run.sh  # recreate the container from scratch
 #   N=20000 ./run.sh    # different dataset size
+#   PDF=1 N=100 ./run.sh # random 40-60 page PDF File dataset, then rename measurements
 #   ./run.sh down       # remove the container
 #
 set -euo pipefail
@@ -13,6 +14,7 @@ set -euo pipefail
 IMAGE="${IMAGE:-plone/plone-backend:6.2}"
 CONTAINER="${CONTAINER:-cmfbench}"
 N="${N:-10000}"
+PDF="${PDF:-0}"
 REPO="${REPO:-https://github.com/zopefoundation/Products.CMFCore.git}"
 BRANCH="${BRANCH:-move_optimization}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +22,10 @@ SRCDIR="$HERE/_src/Products.CMFCore"
 DATADIR="$HERE/_data"
 CONF="etc/zope.conf"
 ZRUN="/app/bin/zconsole run $CONF"
+case "${PDF,,}" in
+  1|true|yes|on) PDF_ENABLED=1 ;;
+  *) PDF_ENABLED=0 ;;
+esac
 
 # zope.conf uses $(...) substitutions that the image entrypoint normally exports
 # at runtime; set them at `docker run` so every `docker exec` inherits them.
@@ -84,19 +90,35 @@ elif ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   docker start "$CONTAINER" >/dev/null
 fi
 
+if [[ "$PDF_ENABLED" == "1" ]]; then
+  log "Ensuring Python lorem package for PDF dataset"
+  docker exec "$CONTAINER" /app/bin/python -c "import lorem" 2>/dev/null || \
+    docker exec "$CONTAINER" /app/bin/pip install lorem -q
+fi
+
 # --- dataset ---------------------------------------------------------------
-log "Ensuring dataset of $N objects (idempotent)"
-docker exec -e BENCH_CMD=setup -e BENCH_N="$N" \
+if [[ "$PDF_ENABLED" == "1" ]]; then
+  log "Ensuring PDF dataset of $N files (idempotent)"
+else
+  log "Ensuring dataset of $N Document objects (idempotent)"
+fi
+docker exec -e BENCH_CMD=setup -e BENCH_N="$N" -e PDF="$PDF_ENABLED" \
   "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py
 
 # --- measurements ----------------------------------------------------------
+SCENARIOS=(rename cutpaste)
+if [[ "$PDF_ENABLED" == "1" ]]; then
+  SCENARIOS=(rename)
+fi
+
 log "Running measurements"
 RESULTS=()
-for scenario in rename cutpaste; do
+for scenario in "${SCENARIOS[@]}"; do
   for mode in baseline optimized; do
     bl=""; [[ "$mode" == "baseline" ]] && bl="1"
     line="$(docker exec \
       -e BENCH_CMD=bench -e BENCH_SCENARIO="$scenario" -e BENCH_BASELINE="$bl" \
+      -e PDF="$PDF_ENABLED" \
       "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py \
       2>/dev/null | grep '^RESULT' || true)"
     echo "$line"
@@ -106,21 +128,22 @@ done
 
 # --- summary ---------------------------------------------------------------
 log "Summary"
-printf '%-9s %-10s %8s %9s  %12s %14s %11s %11s\n' \
-  scenario mode N seconds catalog_obj uncatalog_obj idx_updates move_object
-printf -- '---------------------------------------------------------------------------------------------\n'
+printf '%-9s %-10s %8s %9s  %12s %14s %11s %11s %16s\n' \
+  scenario mode N seconds catalog_obj uncatalog_obj idx_updates move_object searchable_words
+printf -- '----------------------------------------------------------------------------------------------------------\n'
 declare -A SECS
 for r in "${RESULTS[@]}"; do
   [[ -z "$r" ]] && continue
   eval "${r#RESULT }"   # sets scenario= mode= N= seconds= catalog_object= ...
-  printf '%-9s %-10s %8s %9s  %12s %14s %11s %11s\n' \
+  printf '%-9s %-10s %8s %9s  %12s %14s %11s %11s %16s\n' \
     "$scenario" "$mode" "$N" "$seconds" \
-    "$catalog_object" "$uncatalog_object" "$idx_updates" "$move_object"
+    "$catalog_object" "$uncatalog_object" "$idx_updates" "$move_object" \
+    "${searchable_words:-0}"
   SECS["$scenario/$mode"]="$seconds"
 done
 
 echo
-for scenario in rename cutpaste; do
+for scenario in "${SCENARIOS[@]}"; do
   b="${SECS[$scenario/baseline]:-}"; o="${SECS[$scenario/optimized]:-}"
   if [[ -n "$b" && -n "$o" ]]; then
     awk -v s="$scenario" -v b="$b" -v o="$o" 'BEGIN{

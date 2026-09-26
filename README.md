@@ -6,8 +6,8 @@ Plone 6 site, running in an isolated `plone/plone-backend` container.
 
 **Optimization under test:** on `IObjectMovedEvent`, instead of a full
 `unindexObject()` + `indexObject()` (recomputing *all* catalog indexes), the
-catalog RID is preserved and only the *context-aware* indexes (`path`, `getId`,
-`id`, `allowedRolesAndUsers`) are reindexed.
+catalog RID is preserved and only the registered *context-aware* indexes are
+reindexed.
 
 📊 **Results:** see [BENCHMARK.md](BENCHMARK.md) — moving a 10k-object folder is
 ~1.9× faster with ~8× fewer index writes.
@@ -22,6 +22,7 @@ catalog RID is preserved and only the *context-aware* indexes (`path`, `getId`,
 ```bash
 ./run.sh                 # ensure container + Plone site + 10k-object dataset, then 4 measurements
 N=20000 ./run.sh         # bigger dataset
+PDF=1 N=100 ./run.sh     # random 40-60 page PDF File dataset, then rename measurements
 REBUILD=1 ./run.sh       # recreate the container from scratch
 BRANCH=move_optimization ./run.sh
 IMAGE=plone/plone-backend:6.2 ./run.sh
@@ -35,16 +36,23 @@ Plone site, and builds `/Plone/bigfolder` with `N` Documents plus an empty
 `/Plone/dest`. Later runs reuse the persisted container/dataset and just
 re-measure (fast).
 
+With `PDF=1`, `run.sh` also ensures the Python `lorem` package is installed,
+builds `/Plone/bigfilefolder` with `N` random 40-60 page PDF `File`
+objects, and runs the rename scenario against that folder (`baseline` and
+`optimized`).
+
 ## What it measures
 
-Four runs — `{rename, cutpaste} × {baseline, optimized}` — each timing the move
-plus the catalog-queue flush, then aborting the transaction so the dataset stays
-pristine and repeatable.
+By default, four runs — `{rename, cutpaste} × {baseline, optimized}` — each
+timing the move plus the catalog-queue flush, then aborting the transaction so
+the dataset stays pristine and repeatable. With `PDF=1`, the measurements are
+`{rename} × {baseline, optimized}` against `/Plone/bigfilefolder`.
 
 - **rename** — `manage_renameObject('bigfolder', 'bigfolder_moved')`
 - **cutpaste** — cut `bigfolder`, paste into `/Plone/dest`
-- **baseline** — unregisters the two `IContextAwareIndexProvider` utilities, so
-  `handleContentishEvent` runs the original `unindex` + `index` path
+- **baseline** — unregisters the registered `IContextAwareIndexProvider`
+  utilities, so `handleContentishEvent` runs the original `unindex` + `index`
+  path
 - **optimized** — utilities registered (default), so the `moveObject` path runs
 
 ### Reading the output
@@ -53,7 +61,8 @@ pristine and repeatable.
 |---|---|---|
 | `uncatalog_object` | ~N (every child unindexed) | 0 |
 | `catalog_object` | ~N (full re-index) | ~N (but only context-aware idxs) |
-| `idx_updates` | N × *all* indexes | N × 4 | 
+| `idx_updates` | N × *all* indexes | N × registered context-aware indexes | 
+| `searchable_words` | unique terms in `SearchableText` lexicon | same dataset vocabulary |
 | `seconds` | higher | lower |
 | `move_object` | 0 | ~N |
 
@@ -104,7 +113,7 @@ column versus `idx_updates` makes it visible and is useful input for tuning
 
 ## Files
 
-- `benchmark_move.py` — `zconsole` script (`setup` / `bench`), instrumentation, toggle
+- `benchmark_move.py` — `zconsole` script (`setup` / `bench`), instrumentation, toggle, optional PDF dataset
 - `run.sh` — clone + container orchestration + summary
 - `_src/` — cloned CMFCore checkout (created on first run)
 - `_data/` — persisted Plone `Data.fs` (created on first run)
