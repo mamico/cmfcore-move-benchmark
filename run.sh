@@ -7,6 +7,7 @@
 #   REBUILD=1 ./run.sh  # recreate the container from scratch
 #   N=20000 ./run.sh    # different dataset size
 #   PDF=1 N=100 ./run.sh # random 40-60 page PDF File dataset, then rename measurements
+#   CONTEXTLESS= ./run.sh # optimized path reindexes every index (default: SearchableText skipped)
 #   ./run.sh down       # remove the container
 #
 set -euo pipefail
@@ -15,6 +16,8 @@ IMAGE="${IMAGE:-plone/plone-backend:6.2}"
 CONTAINER="${CONTAINER:-cmfbench}"
 N="${N:-10000}"
 PDF="${PDF:-0}"
+# contextless_indexes for the optimized path (comma-separated, empty for none)
+CONTEXTLESS="${CONTEXTLESS-SearchableText}"
 REPO="${REPO:-https://github.com/zopefoundation/Products.CMFCore.git}"
 BRANCH="${BRANCH:-move_optimization}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -118,7 +121,7 @@ for scenario in "${SCENARIOS[@]}"; do
     bl=""; [[ "$mode" == "baseline" ]] && bl="1"
     line="$(docker exec \
       -e BENCH_CMD=bench -e BENCH_SCENARIO="$scenario" -e BENCH_BASELINE="$bl" \
-      -e PDF="$PDF_ENABLED" \
+      -e PDF="$PDF_ENABLED" -e BENCH_CONTEXTLESS="$CONTEXTLESS" \
       "$CONTAINER" $ZRUN /app/scripts-bench/benchmark_move.py \
       2>/dev/null | grep '^RESULT' || true)"
     echo "$line"

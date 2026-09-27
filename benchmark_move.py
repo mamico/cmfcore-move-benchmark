@@ -18,9 +18,15 @@ parameters are passed as environment variables:
   bench    time the move, print a RESULT line, then abort
 
 The script is branch-agnostic: it works on both the original (master) and the
-modified (move_optimization) CMFCore.  ``BENCH_BASELINE=1`` unregisters the
-IContextAwareIndexProvider utilities so that the modified code falls back to the
-original ``unindex`` + ``index`` path (a no-op on master, which is baseline anyway).
+modified (move_optimization) CMFCore.  ``BENCH_BASELINE=1`` hides
+``CatalogTool.moveObject`` (or, on older branch commits, unregisters the
+IContextAwareIndexProvider utilities) so that the modified code falls back to
+the original ``unindex`` + ``index`` path (a no-op on master, which is baseline
+anyway).
+
+``BENCH_CONTEXTLESS`` (comma-separated, default ``SearchableText``, empty for
+none) sets the ``contextless_indexes`` catalog property read by the optimized
+path: those indexes are not reindexed on move.
 """
 
 import os
@@ -286,16 +292,43 @@ def _searchable_text_word_count(portal):
 
 
 def _disable_optimization():
-    """Unregister the context-aware index providers (reproduce baseline)."""
+    """Reproduce the baseline. Returns a callable that restores the optimization.
+
+    Current branch: ``handleContentishEvent`` only takes the optimized path
+    when the catalog has a ``moveObject`` method, so hide it on the class.
+    Older branch commits: unregister the ``IContextAwareIndexProvider``
+    utilities instead.  On master there is nothing to disable.
+    """
     try:
         from Products.CMFCore.interfaces import IContextAwareIndexProvider
     except ImportError:
-        return False  # master: optimization does not exist -> already baseline
-    gsm = getGlobalSiteManager()
-    providers = list(gsm.getUtilitiesFor(IContextAwareIndexProvider))
-    for name, util in providers:
-        gsm.unregisterUtility(util, IContextAwareIndexProvider, name=name)
-    return bool(providers)
+        pass
+    else:
+        gsm = getGlobalSiteManager()
+        providers = list(gsm.getUtilitiesFor(IContextAwareIndexProvider))
+        for name, util in providers:
+            gsm.unregisterUtility(util, IContextAwareIndexProvider, name=name)
+        return lambda: None  # the process exits after one bench run
+
+    from Products.CMFCore.CatalogTool import CatalogTool
+    orig_move = CatalogTool.__dict__.get('moveObject')
+    if orig_move is None:
+        return lambda: None  # master: optimization does not exist
+    del CatalogTool.moveObject
+    return lambda: setattr(CatalogTool, 'moveObject', orig_move)
+
+
+def _set_contextless_indexes(portal, names):
+    """Set the ``contextless_indexes`` catalog property for this transaction.
+
+    Only the optimized move path reads it; the bench aborts afterwards.
+    """
+    catalog = portal.portal_catalog
+    value = tuple(names)
+    if catalog.hasProperty('contextless_indexes'):
+        catalog._updateProperty('contextless_indexes', value)
+    else:
+        catalog._setProperty('contextless_indexes', value, 'lines')
 
 
 def _install_instrumentation():
@@ -339,9 +372,12 @@ def _install_instrumentation():
         from Products.CMFCore.CatalogTool import CatalogTool
         orig_move = getattr(CatalogTool, 'moveObject', None)
         if orig_move is not None:
-            def counting_move(self, object, old_path, idxs):
+            # *args: the signature changed across branch commits
+            # (``moveObject(object, old_path, idxs)`` before, now
+            # ``moveObject(object, old_path)``).
+            def counting_move(self, *args, **kw):
                 counters['move_object'] += 1
-                return orig_move(self, object, old_path, idxs)
+                return orig_move(self, *args, **kw)
             CatalogTool.moveObject = counting_move
             restorers.append(
                 lambda: setattr(CatalogTool, 'moveObject', orig_move))
@@ -361,7 +397,7 @@ def _do_move(portal, scenario, folder_id):
         raise SystemExit('Unknown scenario %r' % scenario)
 
 
-def cmd_bench(app, scenario, baseline, pdf):
+def cmd_bench(app, scenario, baseline, pdf, contextless):
     from Products.CMFCore.indexing import getQueue
 
     _login_admin(app)
@@ -377,10 +413,12 @@ def cmd_bench(app, scenario, baseline, pdf):
     searchable_words = _searchable_text_word_count(portal)
 
     mode = 'baseline'
+    enable_optimization = lambda: None  # noqa: E731
     if not baseline:
         mode = 'optimized'
     else:
-        _disable_optimization()
+        enable_optimization = _disable_optimization()
+    _set_contextless_indexes(portal, contextless)
 
     counters, restore = _install_instrumentation()
     try:
@@ -390,15 +428,17 @@ def cmd_bench(app, scenario, baseline, pdf):
         elapsed = time.perf_counter() - t0
     finally:
         restore()
+        enable_optimization()
         transaction.abort()         # keep the dataset pristine for the next run
 
     print(
         'RESULT scenario=%s mode=%s N=%d seconds=%.3f '
         'catalog_object=%d uncatalog_object=%d idx_updates=%d move_object=%d '
-        'searchable_words=%d'
+        'searchable_words=%d contextless=%s'
         % (scenario, mode, n, elapsed,
            counters['catalog_object'], counters['uncatalog_object'],
-           counters['idx_updates'], counters['move_object'], searchable_words))
+           counters['idx_updates'], counters['move_object'], searchable_words,
+           ','.join(contextless)))
 
 
 # --------------------------------------------------------------------------
@@ -410,7 +450,12 @@ def main(app):
     elif cmd == 'bench':
         scenario = os.environ.get('BENCH_SCENARIO', 'rename')
         baseline = _env_flag('BENCH_BASELINE')
-        cmd_bench(app, scenario, baseline, pdf)
+        contextless = [
+            name.strip()
+            for name in os.environ.get(
+                'BENCH_CONTEXTLESS', 'SearchableText').split(',')
+            if name.strip()]
+        cmd_bench(app, scenario, baseline, pdf, contextless)
     else:
         raise SystemExit('Set BENCH_CMD=setup|bench (see module docstring).')
 
