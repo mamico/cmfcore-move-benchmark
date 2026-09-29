@@ -3,9 +3,8 @@
 Measures the effect of the `Products.CMFCore` move optimization (branch
 `move_optimization`) when moving a folder with many children in a real Plone 6
 site. On `IObjectMovedEvent` the optimization preserves the catalog RID and
-reindexes only the *context-aware* indexes (`path`, `getId`, `id`,
-`allowedRolesAndUsers`) instead of doing a full `unindexObject()` +
-`indexObject()` that recomputes **all** indexes.
+reindexes only the registered *context-aware* indexes instead of doing a full
+`unindexObject()` + `indexObject()` that recomputes **all** indexes.
 
 ## Summary
 
@@ -16,9 +15,16 @@ Moving a folder of **10,000** objects:
 | rename (`manage_renameObject`) | 72.22 s | 38.39 s | **1.88×** | **46.8 %** |
 | cut + paste | 74.37 s | 40.21 s | **1.85×** | **45.9 %** |
 
-The optimization eliminates the unindex pass entirely and reindexes ~4 indexes
-per object instead of ~32 — an **~8× reduction in index updates**, roughly
-halving wall-clock time.
+The optimization eliminates the unindex pass entirely and reindexes only the
+registered context-aware indexes instead of ~32 indexes. On empty `Document`
+objects that roughly halves wall-clock time; on generated PDF files, avoiding a
+full `SearchableText` reindex is dramatically more important.
+
+Moving a folder of **5,000 generated 40-60 page PDF files** (`rename` only):
+
+| scenario | baseline | optimized | speedup | time saved | `SearchableText` words |
+|---|--:|--:|--:|--:|--:|
+| rename (`manage_renameObject`) | 797.20 s | 38.44 s | **20.74×** | **95.2 %** | 10,237 |
 
 ## Environment
 
@@ -29,16 +35,16 @@ halving wall-clock time.
 | Python | 3.13 |
 | Products.CMFCore | 3.10.dev0 — branch `move_optimization` (editable, cloned from GitHub) |
 | Storage | FileStorage (Data.fs), `ZODB_CACHE_SIZE=50000` |
-| Dataset | `/Plone/bigfolder` with N `Document` objects; cut/paste target `/Plone/dest` |
+| Dataset | `/Plone/bigfolder` with N `Document` objects; PDF runs use `/Plone/bigfilefolder` with generated PDF `File` objects; cut/paste target `/Plone/dest` |
 | Host | 30 GiB RAM |
 
 ## Methodology
 
 - **Single binary, single variable.** Baseline and optimized run on the *same*
-  image, branch and dataset. The only difference is whether the two
-  `IContextAwareIndexProvider` utilities (`cmf.location`, `cmf.security`) are
-  registered. With them unregistered, `handleContentishEvent` executes the exact
-  original `unindex` + `index` path. This isolates the feature itself.
+  image, branch and dataset. The only difference is whether the registered
+  `IContextAwareIndexProvider` utilities are active. With them unregistered,
+  `handleContentishEvent` executes the exact original `unindex` + `index` path.
+  This isolates the feature itself.
 - **What is timed.** The move operation plus the catalog-queue flush
   (`getQueue().process()`), i.e. the actual indexing work — not just enqueuing.
 - **Repeatable.** Each measurement runs in a fresh `zconsole` process, performs
@@ -50,6 +56,38 @@ halving wall-clock time.
 - A folder move dispatches the move events to **every descendant**
   (`OFS.subscribers` → `dispatchToSublocations`), so `handleContentishEvent`
   runs once per child — this is what makes a big-folder move expensive.
+
+## Results — 5,000 generated PDF files
+
+Dataset: `/Plone/bigfilefolder` containing 5,000 generated PDF `File` objects,
+each with 40-60 pages of lorem ipsum text. Scenario: `rename`.
+
+```
+scenario  mode         N        seconds  catalog_object  uncatalog_object  idx_updates  move_object  searchable_words
+rename    baseline      5000    797.201            5003              5001       160065            0             10237
+rename    optimized     5000     38.440            5003                 0        30039         5001             10237
+```
+
+| scenario | baseline | optimized | speedup | time saved |
+|---|--:|--:|--:|--:|
+| rename (`manage_renameObject`) | 797.20 s | 38.44 s | **20.74×** | **95.2 %** |
+
+### Interpretation
+
+- **Full-text extraction dominates the baseline:** baseline takes 797.20 s
+  because every PDF is fully unindexed and reindexed, including
+  `SearchableText` extraction over a 10,237-term vocabulary.
+- **The optimized path avoids `SearchableText`:** optimized takes 38.44 s and
+  keeps `searchable_words=10237`, confirming the move did not change the full
+  text vocabulary.
+- **Index updates:** baseline ≈ `160065 / 5003 ≈ 32` updates per cataloged
+  object; optimized ≈ `30039 / 5003 ≈ 6`, matching the currently registered
+  context-aware indexes. This is a **~5.3× reduction in counted index updates**,
+  while wall-clock time improves **20.74×** because expensive PDF text extraction
+  is skipped entirely.
+- **Unindex pass removed:** optimized issues `uncatalog_object=0` and
+  `move_object=5001`, confirming every descendant goes through
+  `CatalogTool.moveObject` instead of the full unindex + reindex path.
 
 ## Results — 10,000 objects
 
@@ -111,8 +149,9 @@ cutpaste  optimized    50000    504.238           50003                 0       
 ## Reproduce
 
 ```bash
-./run.sh                 # 10k by default
-N=100000 ./run.sh        # 100k
+./run.sh                 # 10k Document objects by default
+N=100000 ./run.sh        # 100k Document objects
+PDF=1 N=5000 ./run.sh    # 5k generated 40-60 page PDFs, rename only
 ```
 
 See [README.md](README.md) for details and the optional real-branch comparison.
